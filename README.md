@@ -38,7 +38,7 @@
 * The availability of extensible VMX features is reported to software using a set of VMX capability MSRs.
 
 ### Enabling And Entering VMX Operation:
-* Before system software can enter VMX operation, it enables VMX by setting CR4.VMXE[bit 13] = 1. 
+* Before system software can enter VMX operation, it enables VMX by setting __CR4.VMXE[bit 13] = 1__. 
 * VMXON causes an invalid-opcode exception (#UD) if executed with CR4.VMXE = 0.
 * Once in VMX operation, it is not possible to clear CR4.VMXE. CR4.VMXE can be cleared outside of VMX operation after executing of VMXOFF.
 * VMXON is also controlled by the IA32_FEATURE_CONTROL MSR (MSR address 3AH). The relevant bits of the MSR are:
@@ -46,16 +46,16 @@
 	- Bit 1 enables VMXON in SMX operation: If this bit is 0, execution of VMXON in SMX operation causes a #GP exception.
 	- Bit 2 enables VMXON outside SMX operation. If this bit is 0, execution of VMXON outside SMX operation causes a #GP exception.
 * To enable VMX support in a platform, BIOS must set bit 1, bit 2, or both , as well as the lock bit.
+* Before executing VMXON, software should allocate a naturally aligned __4-KByte__ region of memory that a logical processor may use to support VMX operation. This region is called the __VMXON region__. The address of the VMXON region (the VMXON pointer) is provided in an operand to VMXON.
 
 ### Restrictions On VMX Operation:
 * VMX operation places restrictions on processor operation:
-    - In VMX operation, processors may fix certain bits in CR0 and CR4 to specific values and not support other values. VMXON fails if any of these bits contains an unsupported value.
+    - In VMX operation, processors may fix certain bits in __CR0__ and __CR4__ to specific values and not support other values. VMXON fails if any of these bits contains an unsupported value.
     - Any attempt to set one of these bits to an unsupported value while in VMX operation using any of the CLTS, LMSW, or MOV CR instructions causes a #GP exception. VM entry or VM exit cannot set any of these bits to an unsupported value.
 * Software should consult the VMX capability:
-    - MSRs IA32_VMX_CR0_FIXED0 and IA32_VMX_CR0_FIXED1 to determine how bits are fixed for CR0.
-    - MSRs IA32_VMX_CR4_FIXED0 and IA32_VMX_CR4_FIXED1 to determine how bits are fixed for CR4.
-* The first processors to support VMX operation require that the following bits be 1 in VMX operation:
-    * CR0.PE, CR0.NE, CR0.PG, and CR4.VMXE.
+    - MSRs __IA32_VMX_CR0_FIXED0__ and __IA32_VMX_CR0_FIXED1__ to determine how bits are fixed for CR0.
+    - MSRs __IA32_VMX_CR4_FIXED0__ and __IA32_VMX_CR4_FIXED1__ to determine how bits are fixed for CR4.
+* The first processors to support VMX operation require that the following bits be 1 in VMX operation: __CR0.PE, CR0.NE, CR0.PG, and CR4.VMXE__.
 * The restrictions on CR0.PE and CR0.PG imply that VMX operation is supported only in paged protected mode. Therefore, guest software cannot be run in unpaged protected mode or in real-address mode.
 * Later processors support a VM-execution control called “unrestricted guest”. If this control is 1, CR0.PE and CR0.PG may be 0 in VMX non-root operation (even if the capability MSR IA32_VMX_CR0_FIXED0 reports otherwise). Such processors allow guest software to run in unpaged protected mode or in real-address mode.
 
@@ -105,6 +105,38 @@ The VMCS data are organized into six logical groups:
 
 #### VMCS Layout:
 * The VMCS layout is available in a form of table here: [VMCS Layout.pdf](../master/pdf/VMCS.pdf)
+
+### VMCS Types: Ordinary And Shadow
+* Every VMCS is either an __ordinary VMCS__ or a __shadow VMCS__. A VMCS’s type is determined by the shadow-VMCS indicator in the VMCS region.
+* A shadow VMCS differs from an ordinary VMCS in two ways:
+	- An ordinary VMCS can be used for VM entry but a shadow VMCS cannot. Attempts to perform VM entry when the current VMCS is a shadow VMCS fail.
+	- The VMREAD and VMWRITE instructions can be used in VMX non-root operation to access a shadow VMCS but not an ordinary VMCS.
+
+### Software Use of Virtual-Machine Control Structures
+* To ensure proper processor behavior, software should observe certain guidelines when using an active VMCS:
+	- No VMCS should ever be active on more than one logical processor
+	- Software should not modify the shadow-VMCS indicator (see Table 24-1) in the VMCS region of a VMCS that is active. 
+	- Software should use the VMREAD and VMWRITE instructions to access the different fields in the current VMCS.
+
+### VMREAD, VMWRITE, and Encodings of VMCS Fields
+* Every field of the VMCS is associated with a 32-bit value that is its __encoding__. The encoding is provided in an operand to VMREAD and VMWRITE when software wishes to read or write that field.
+* The structure of the 32-bit encodings of the VMCS components is determined principally by the width of the fields and their function in the VMCS.
+<p align="center"><img src="https://i.imgur.com/Ve19xHd.png"  width="600px" height="auto"></p>
+
+###  Initializing a VMCS
+* Software should initialize fields in a VMCS (using VMWRITE) before using the VMCS for VM entry.
+* A processor maintains some VMCS information that cannot be modified with the VMWRITE instruction; this includes a VMCS’s launch state. Such information may be stored in the VMCS data portion of a VMCS region. Because the format of this information is __implementation-specific__, there is no way for software to know, when it first allocates a region of memory for use as a VMCS region, how the processor will determine this information from the contents of the memory region.
+* VMCLEAR should be executed for a VMCS before it is used for VM entry for the first time.
+* VMLAUNCH should be used for the first VM entry using a VMCS after VMCLEAR has been executed for that VMCS.
+* VMRESUME should be used for any subsequent VM entry using a VMCS (until the next execution of VMCLEAR for the VMCS)
+
+### VMXON Region
+* The amount of memory required for the VMXON region is the same as that required for a VMCS region. This size is implementation specific and can be determined by consulting the VMX capability __MSR IA32_VMX_BASIC__.
+* Software can determine a processor’s physical-address width by executing CPUID with __80000008H__ in EAX. The physical-address width is returned in bits 7:0 of EAX.
+* If IA32_VMX_BASIC[48] is read as 1, the VMXON pointer must not set any bits in the range 63:32.
+* Before executing VMXON, software should write the __VMCS revision identifier__ to the VMXON region. (Specifically, it should write the 31-bit VMCS revision identifier to bits 30:0 of the first 4 bytes of the VMXON region; bit 31 should be cleared to 0.) => ```__readmsr(MSR_IA32_VMX_BASIC~0x480);```
+* Software should use a separate region for each logical processor and should not access or modify the VMXON region of a logical processor between execution of VMXON and VMXOFF on that logical processor. Doing otherwise may lead to unpredictable behavior.
+
 
 #### Instructions That Cause VM Exits Unconditionally
 * The following instructions cause VM exits when they are executed in VMX non-root operation: 
